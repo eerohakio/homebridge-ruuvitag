@@ -13,7 +13,7 @@ const tags = {};
 module.exports = (homebridge) => {
   Service = homebridge.hap.Service;
   Characteristic = homebridge.hap.Characteristic;
-  homebridge.registerAccessory('homebridge-ruuvitag', 'Ruuvitag', Ruuvitag, true);
+  homebridge.registerAccessory('homebridge-ruuvitag', 'Ruuvitag', Ruuvitag);
 };
 
 class Ruuvitag {
@@ -48,10 +48,17 @@ class Ruuvitag {
         .getCharacteristic(Characteristic.CurrentRelativeHumidity)
         .setProps({ minValue: 0, maxValue: 100, minStep: 0.5 });
     }
-    this.batteryService = new Service.BatteryService(this.name);
+    // Service.BatteryService was removed in Homebridge 2 (HAP-NodeJS 1.x+)
+    const BatteryService = Service.Battery || Service.BatteryService;
+    this.batteryService = new BatteryService(this.name);
     this.batteryService
       .getCharacteristic(Characteristic.ChargingState)
-      .setValue(Characteristic.ChargingState.NOT_CHARGEABLE);
+      .updateValue(Characteristic.ChargingState.NOT_CHARGEABLE);
+
+    this.informationService = new Service.AccessoryInformation()
+      .setCharacteristic(Characteristic.Manufacturer, 'Ruuvi')
+      .setCharacteristic(Characteristic.Model, 'RuuviTag')
+      .setCharacteristic(Characteristic.SerialNumber, String(this.id || 'unknown'));
 
     if (config.heatTrigger) {
       this.heatTriggerService = new Service.ContactSensor(config.heatTrigger.name || this.name, 'heat');
@@ -119,7 +126,7 @@ class Ruuvitag {
     if ((config.frequency == null) || ((now - this.updatedAt) > config.frequency * 1000)) {
       this.updatedAt = now;
 
-      if (!config.disableTemp) {
+      if (!config.disableTemp && isNumber(temperature)) {
         if (temperature !== this.temperature) {
           this.temperature = temperature;
           this.tempService
@@ -128,7 +135,7 @@ class Ruuvitag {
         }
       }
 
-      if (!config.disableHumidity) {
+      if (!config.disableHumidity && isNumber(humidity)) {
         if (humidity !== this.humidity) {
           this.humidity = humidity;
           this.humidityService
@@ -136,8 +143,9 @@ class Ruuvitag {
             .updateValue(humidity);
         }
       }
-      const batteryLevel = Math.max(0, Math.min(100, (battery - 2000) / 1000 * 100));
-      if (batteryLevel !== this.batteryLevel) {
+      // BatteryLevel is an integer (uint8) characteristic
+      const batteryLevel = Math.round(Math.max(0, Math.min(100, (battery - 2000) / 1000 * 100)));
+      if (isNumber(battery) && batteryLevel !== this.batteryLevel) {
         this.batteryLevel = batteryLevel;
         this.batteryService
           .getCharacteristic(Characteristic.BatteryLevel)
@@ -145,16 +153,18 @@ class Ruuvitag {
       }
     }
 
-    const batteryState = (battery < 2000) ? 1 : 0;
+    const batteryState = (battery < 2000)
+      ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+      : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL;
 
-    if (batteryState !== this.batteryState) {
+    if (isNumber(battery) && batteryState !== this.batteryState) {
       this.batteryState = batteryState;
       this.batteryService
         .getCharacteristic(Characteristic.StatusLowBattery)
         .updateValue(batteryState);
     }
 
-    if (config.heatTrigger) {
+    if (config.heatTrigger && isNumber(temperature)) {
       const heatState = (temperature > this.heatTriggerValue) ? 1 : 0;
 
       if (heatState !== this.heatState) {
@@ -165,7 +175,7 @@ class Ruuvitag {
       }
     }
 
-    if (config.coldTrigger) {
+    if (config.coldTrigger && isNumber(temperature)) {
       const coldState = (temperature < this.coldTriggerValue) ? 1 : 0;
 
       if (coldState !== this.coldState) {
@@ -176,7 +186,7 @@ class Ruuvitag {
       }
     }
 
-    if (config.highHumidityTrigger) {
+    if (config.highHumidityTrigger && isNumber(humidity)) {
       const highHumidityState = (humidity > this.highHumidityTriggerValue) ? 1 : 0;
 
       if (highHumidityState !== this.highHumidityState) {
@@ -187,10 +197,10 @@ class Ruuvitag {
       }
     }
 
-    if (config.lowHumidityTrigger) {
+    if (config.lowHumidityTrigger && isNumber(humidity)) {
       const lowHumidityState = (humidity < this.lowHumidityTriggerValue) ? 1 : 0;
 
-      if (lowHumidityState !== this.lowHumidityService) {
+      if (lowHumidityState !== this.lowHumidityState) {
         this.lowHumidityState = lowHumidityState;
         this.lowHumidityTriggerService
           .getCharacteristic(Characteristic.ContactSensorState)
@@ -218,7 +228,7 @@ class Ruuvitag {
   }
 
   getServices () {
-    const services = [];
+    const services = [this.informationService];
 
     if (this.tempService) {
       services.push(this.tempService);
@@ -252,6 +262,10 @@ class Ruuvitag {
 
     return services;
   }
+}
+
+function isNumber (value) {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function hypotenuse (a, b, c = 0) {
